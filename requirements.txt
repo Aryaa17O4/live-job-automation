@@ -11,6 +11,3 @@ google-auth-oauthlib>=1.2.0
 
 # Playwright (Workflow 2 only)
 playwright>=1.44.0
-
-# Internshala PyPI lib (Workflow 1)
-internshala>=0.1.0
