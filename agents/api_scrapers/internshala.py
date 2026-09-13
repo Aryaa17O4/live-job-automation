@@ -1,65 +1,52 @@
-"""
-agents/api_scrapers/internshala.py  — Workflow 1
-Internshala via internshala PyPI library  →  Google Sheets
-pip install internshala
-"""
-import sys, os
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), "../.."))
-
-from core.utils import keyword_match
+import requests
+from bs4 import BeautifulSoup
 from core.sheets_logger import log_jobs
-
-PLATFORM = "Internshala"
-
-# Search terms to iterate over
-SEARCH_TERMS = [
-    "python", "django", "react", "node js",
-    "machine learning", "data science", "web development",
-    "backend", "full stack", "software development"
-]
-
+from core.utils import filter_keywords
+import os
 
 def run():
-    try:
-        from internshala import Internshala
-    except ImportError:
-        print("[Internshala] 'internshala' package not installed. Run: pip install internshala")
-        return
+    keywords = os.environ.get("JOB_KEYWORDS", "python,backend,software intern").split(",")
+    results = []
 
-    print(f"[{PLATFORM}] Fetching internships...")
-    client = Internshala()
-    seen_urls = set()
-    jobs = []
+    for keyword in keywords:
+        keyword = keyword.strip()
+        url = f"https://internshala.com/internships/keywords-{keyword.replace(' ', '-')}"
+        headers = {
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"
+        }
 
-    for term in SEARCH_TERMS:
         try:
-            results = client.search(term)
-            for item in results:
-                url = getattr(item, "url", "") or str(item.get("url", ""))
-                if url in seen_urls:
-                    continue
-                seen_urls.add(url)
+            resp = requests.get(url, headers=headers, timeout=15)
+            soup = BeautifulSoup(resp.text, "lxml")
 
-                title = getattr(item, "title", "") or item.get("title", "Internship")
-                company = getattr(item, "company", "") or item.get("company_name", "Unknown")
-                location = getattr(item, "location", "") or item.get("location", "India")
+            for card in soup.select(".individual_internship"):
+                title_el = card.select_one(".profile")
+                company_el = card.select_one(".company_name")
+                location_el = card.select_one(".location_link")
+                link_el = card.select_one("a.view_detail_button")
 
-                if not keyword_match(f"{title} {term}"):
+                title = title_el.get_text(strip=True) if title_el else ""
+                company = company_el.get_text(strip=True) if company_el else ""
+                location = location_el.get_text(strip=True) if location_el else "Remote"
+                link = "https://internshala.com" + link_el["href"] if link_el else url
+
+                if not title:
                     continue
-                jobs.append({
-                    "platform": PLATFORM,
+
+                results.append({
+                    "platform": "Internshala",
                     "title": title,
                     "company": company,
                     "location": location,
-                    "url": url or "https://internshala.com",
                     "status": "Scraped",
+                    "url": link,
                 })
+
         except Exception as e:
-            print(f"[{PLATFORM}] Error for term '{term}': {e}")
+            print(f"[Internshala] Error for keyword '{keyword}': {e}")
 
-    print(f"[{PLATFORM}] Matched {len(jobs)} internships.")
-    log_jobs(jobs)
-
+    log_jobs(results)
+    print(f"[Internshala] Logged {len(results)} jobs")
 
 if __name__ == "__main__":
     run()
