@@ -1,0 +1,43 @@
+name: "Workflow 3 — Scrape-Only Job Logging"
+
+on:
+  schedule:
+    - cron: "0 */8 * * *"   # Every 8 hours
+  workflow_dispatch:
+
+jobs:
+  scrape-only:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+
+    env:
+      GOOGLE_SERVICE_ACCOUNT_JSON: ${{ secrets.GOOGLE_SERVICE_ACCOUNT_JSON }}
+      GOOGLE_SHEET_ID:             ${{ secrets.GOOGLE_SHEET_ID }}
+      JOB_KEYWORDS:                ${{ secrets.JOB_KEYWORDS }}
+      LOCATION_FILTER:             ${{ secrets.LOCATION_FILTER }}
+
+    steps:
+      - name: Checkout repo
+        uses: actions/checkout@v4
+
+      - name: Set up Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Cache pip
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/pip
+          key: ${{ runner.os }}-pip-wf3-${{ hashFiles('requirements.txt') }}
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      - name: Write Google service account JSON
+        run: |
+          echo '${{ secrets.GOOGLE_SERVICE_ACCOUNT_JSON }}' > /tmp/gsa.json
+          echo "GOOGLE_SERVICE_ACCOUNT_JSON=/tmp/gsa.json" >> $GITHUB_ENV
+
+      - name: Run All Scrape-Only Agents
+        run: python -m agents.scrape_only.all_scrapers

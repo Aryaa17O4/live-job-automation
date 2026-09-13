@@ -1,0 +1,64 @@
+name: "Workflow 1 — API & RSS Scrapers"
+
+on:
+  schedule:
+    - cron: "0 */6 * * *"   # Every 6 hours
+  workflow_dispatch:
+
+jobs:
+  api-rss-scrape:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+
+    env:
+      GOOGLE_SERVICE_ACCOUNT_JSON: ${{ secrets.GOOGLE_SERVICE_ACCOUNT_JSON }}
+      GOOGLE_SHEET_ID:             ${{ secrets.GOOGLE_SHEET_ID }}
+      JOB_KEYWORDS:                ${{ secrets.JOB_KEYWORDS }}
+      LOCATION_FILTER:             ${{ secrets.LOCATION_FILTER }}
+
+    steps:
+      - name: Checkout repo
+        uses: actions/checkout@v4
+
+      - name: Set up Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Cache pip
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/pip
+          key: ${{ runner.os }}-pip-wf1-${{ hashFiles('requirements.txt') }}
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      - name: Write Google service account JSON
+        run: |
+          echo '${{ secrets.GOOGLE_SERVICE_ACCOUNT_JSON }}' > /tmp/gsa.json
+          echo "GOOGLE_SERVICE_ACCOUNT_JSON=/tmp/gsa.json" >> $GITHUB_ENV
+
+      - name: Run RemoteOK
+        run: python -m agents.api_scrapers.remoteok
+
+      - name: Run Remotive
+        run: python -m agents.api_scrapers.remotive
+
+      - name: Run Himalayas
+        run: python -m agents.api_scrapers.himalayas
+
+      - name: Run RSS Feeds (WWR, Jobspresso, Working Nomads, GH Jobs, SO, Dev.to, Foundit, Indeed)
+        run: python -m agents.api_scrapers.rss_feeds
+
+      - name: Run HN Who's Hiring
+        run: python -m agents.api_scrapers.hn_hiring
+
+      - name: Run AICTE Portal
+        run: python -m agents.api_scrapers.aicte
+
+      - name: Run Internshala
+        run: python -m agents.api_scrapers.internshala
+
+      - name: Run Simplify Jobs
+        run: python -m agents.api_scrapers.simplifyjobs

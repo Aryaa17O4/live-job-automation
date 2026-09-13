@@ -1,0 +1,130 @@
+name: "Workflow 2 — Email/Pass Auto Apply"
+
+on:
+  schedule:
+    - cron: "0 3 * * *"    # Daily at 3 AM UTC
+  workflow_dispatch:
+
+jobs:
+  email-pass-apply:
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+
+    env:
+      GOOGLE_SERVICE_ACCOUNT_JSON: ${{ secrets.GOOGLE_SERVICE_ACCOUNT_JSON }}
+      GOOGLE_SHEET_ID:             ${{ secrets.GOOGLE_SHEET_ID }}
+      JOB_KEYWORDS:                ${{ secrets.JOB_KEYWORDS }}
+
+      # ── Cutshort ───────────────────────────────────────────────
+      CUTSHORT_EMAIL:      ${{ secrets.CUTSHORT_EMAIL }}
+      CUTSHORT_PASSWORD:   ${{ secrets.CUTSHORT_PASSWORD }}
+
+      # ── Hirist ────────────────────────────────────────────────
+      HIRIST_EMAIL:        ${{ secrets.HIRIST_EMAIL }}
+      HIRIST_PASSWORD:     ${{ secrets.HIRIST_PASSWORD }}
+
+      # ── Instahyre ─────────────────────────────────────────────
+      INSTAHYRE_EMAIL:     ${{ secrets.INSTAHYRE_EMAIL }}
+      INSTAHYRE_PASSWORD:  ${{ secrets.INSTAHYRE_PASSWORD }}
+
+      # ── Wellfound ─────────────────────────────────────────────
+      WELLFOUND_EMAIL:     ${{ secrets.WELLFOUND_EMAIL }}
+      WELLFOUND_PASSWORD:  ${{ secrets.WELLFOUND_PASSWORD }}
+
+      # ── Unstop ────────────────────────────────────────────────
+      UNSTOP_EMAIL:        ${{ secrets.UNSTOP_EMAIL }}
+      UNSTOP_PASSWORD:     ${{ secrets.UNSTOP_PASSWORD }}
+
+      # ── F6S ───────────────────────────────────────────────────
+      F6S_EMAIL:           ${{ secrets.F6S_EMAIL }}
+      F6S_PASSWORD:        ${{ secrets.F6S_PASSWORD }}
+
+      # ── AngelList ─────────────────────────────────────────────
+      ANGELLIST_EMAIL:     ${{ secrets.ANGELLIST_EMAIL }}
+      ANGELLIST_PASSWORD:  ${{ secrets.ANGELLIST_PASSWORD }}
+
+      # ── Startup.jobs ──────────────────────────────────────────
+      STARTUPJOBS_EMAIL:   ${{ secrets.STARTUPJOBS_EMAIL }}
+      STARTUPJOBS_PASSWORD: ${{ secrets.STARTUPJOBS_PASSWORD }}
+
+      # ── VentureLoop ───────────────────────────────────────────
+      VENTURELOOP_EMAIL:   ${{ secrets.VENTURELOOP_EMAIL }}
+      VENTURELOOP_PASSWORD: ${{ secrets.VENTURELOOP_PASSWORD }}
+
+      # ── Dice ──────────────────────────────────────────────────
+      DICE_EMAIL:          ${{ secrets.DICE_EMAIL }}
+      DICE_PASSWORD:       ${{ secrets.DICE_PASSWORD }}
+
+      # ── Built In ──────────────────────────────────────────────
+      BUILTIN_EMAIL:       ${{ secrets.BUILTIN_EMAIL }}
+      BUILTIN_PASSWORD:    ${{ secrets.BUILTIN_PASSWORD }}
+
+      # ── Lemon.io ──────────────────────────────────────────────
+      LEMONIO_EMAIL:       ${{ secrets.LEMONIO_EMAIL }}
+      LEMONIO_PASSWORD:    ${{ secrets.LEMONIO_PASSWORD }}
+
+      # ── Arc.dev ───────────────────────────────────────────────
+      ARCDEV_EMAIL:        ${{ secrets.ARCDEV_EMAIL }}
+      ARCDEV_PASSWORD:     ${{ secrets.ARCDEV_PASSWORD }}
+
+      # ── Contra ────────────────────────────────────────────────
+      CONTRA_EMAIL:        ${{ secrets.CONTRA_EMAIL }}
+      CONTRA_PASSWORD:     ${{ secrets.CONTRA_PASSWORD }}
+
+      # ── Toptal ────────────────────────────────────────────────
+      TOPTAL_EMAIL:        ${{ secrets.TOPTAL_EMAIL }}
+      TOPTAL_PASSWORD:     ${{ secrets.TOPTAL_PASSWORD }}
+
+      # ── Gun.io ────────────────────────────────────────────────
+      GUNIO_EMAIL:         ${{ secrets.GUNIO_EMAIL }}
+      GUNIO_PASSWORD:      ${{ secrets.GUNIO_PASSWORD }}
+
+      # ── Hired.com ─────────────────────────────────────────────
+      HIRED_EMAIL:         ${{ secrets.HIRED_EMAIL }}
+      HIRED_PASSWORD:      ${{ secrets.HIRED_PASSWORD }}
+
+      # ── Turing ────────────────────────────────────────────────
+      TURING_EMAIL:        ${{ secrets.TURING_EMAIL }}
+      TURING_PASSWORD:     ${{ secrets.TURING_PASSWORD }}
+
+      # ── Flexiple ──────────────────────────────────────────────
+      FLEXIPLE_EMAIL:      ${{ secrets.FLEXIPLE_EMAIL }}
+      FLEXIPLE_PASSWORD:   ${{ secrets.FLEXIPLE_PASSWORD }}
+
+      # ── PeoplePerHour ─────────────────────────────────────────
+      PEOPLEPHOUR_EMAIL:   ${{ secrets.PEOPLEPHOUR_EMAIL }}
+      PEOPLEPHOUR_PASSWORD: ${{ secrets.PEOPLEPHOUR_PASSWORD }}
+
+    steps:
+      - name: Checkout repo
+        uses: actions/checkout@v4
+
+      - name: Set up Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Cache pip
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/pip
+          key: ${{ runner.os }}-pip-wf2-${{ hashFiles('requirements.txt') }}
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      - name: Install Playwright browsers
+        run: playwright install chromium --with-deps
+
+      - name: Write Google service account JSON
+        run: |
+          echo '${{ secrets.GOOGLE_SERVICE_ACCOUNT_JSON }}' > /tmp/gsa.json
+          echo "GOOGLE_SERVICE_ACCOUNT_JSON=/tmp/gsa.json" >> $GITHUB_ENV
+
+      - name: Run Cutshort
+        run: python -m agents.email_pass.cutshort
+        continue-on-error: true
+
+      - name: Run All Other Email/Pass Agents
+        run: python -m agents.email_pass.all_agents
+        continue-on-error: true
