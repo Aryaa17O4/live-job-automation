@@ -36,8 +36,7 @@ jobs:
 
       - name: Write Google service account JSON
         run: |
-          echo '${{ secrets.GOOGLE_SERVICE_ACCOUNT_JSON }}' > /tmp/gsa.json
-          echo "GOOGLE_SERVICE_ACCOUNT_JSON=/tmp/gsa.json" >> $GITHUB_ENV
+            echo "GOOGLE_SERVICE_ACCOUNT_JSON=${{ secrets.GOOGLE_SERVICE_ACCOUNT_JSON }}" >> $GITHUB_ENV
 
       - name: Run RemoteOK
         run: python -m agents.api_scrapers.remoteok
