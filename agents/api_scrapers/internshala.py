@@ -1,7 +1,6 @@
 import requests
 from bs4 import BeautifulSoup
 from core.sheets_logger import log_jobs
-from core.utils import filter_keywords
 import os
 
 def run():
@@ -11,9 +10,7 @@ def run():
     for keyword in keywords:
         keyword = keyword.strip()
         url = f"https://internshala.com/internships/keywords-{keyword.replace(' ', '-')}"
-        headers = {
-            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"
-        }
+        headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"}
 
         try:
             resp = requests.get(url, headers=headers, timeout=15)
