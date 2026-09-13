@@ -1,14 +1,7 @@
-"""
-core/sheets_logger.py
-─────────────────────
-Central Google Sheets logger used by ALL three workflows.
-Headers: Date | Platform | Job Title | Company | Location | Status | Job URL
-Duplicate check: Job Title + Company + Platform
-"""
-
 import os
+import json
+import datetime
 import gspread
-from datetime import datetime
 from google.oauth2.service_account import Credentials
 
 SCOPES = [
@@ -18,12 +11,11 @@ SCOPES = [
 
 HEADERS = ["Date", "Platform", "Job Title", "Company", "Location", "Status", "Job URL"]
 
-
 def _get_sheet():
     """Authenticate and return the target worksheet."""
-    creds = Credentials.from_service_account_file(
-        os.environ["GOOGLE_SERVICE_ACCOUNT_JSON"], scopes=SCOPES
-    )
+    json_content = os.environ["GOOGLE_SERVICE_ACCOUNT_JSON"]
+    creds_dict = json.loads(json_content)
+    creds = Credentials.from_service_account_info(creds_dict, scopes=SCOPES)
     client = gspread.authorize(creds)
     sheet_id = os.environ["GOOGLE_SHEET_ID"]
     wb = client.open_by_key(sheet_id)
@@ -33,7 +25,6 @@ def _get_sheet():
         ws = wb.add_worksheet(title="Jobs", rows="5000", cols="7")
         ws.append_row(HEADERS)
     return ws
-
 
 def _existing_keys(ws):
     """Return a set of (job_title_lower, company_lower, platform_lower) tuples."""
@@ -47,19 +38,7 @@ def _existing_keys(ws):
         for r in records
     }
 
-
 def log_jobs(jobs: list[dict]) -> dict:
-    """
-    Log a list of job dicts to Google Sheets.
-
-    Each dict must contain:
-        platform, title, company, location, url
-    Optional:
-        status  (defaults to "Scraped")
-
-    Returns:
-        {"added": int, "skipped": int}
-    """
     if not jobs:
         return {"added": 0, "skipped": 0}
 
@@ -77,18 +56,16 @@ def log_jobs(jobs: list[dict]) -> dict:
         if key in existing:
             skipped += 1
             continue
-        existing.add(key)  # prevent within-batch duplicates
-        rows_to_add.append(
-            [
-                datetime.utcnow().strftime("%Y-%m-%d %H:%M"),
-                job.get("platform", ""),
-                job.get("title", ""),
-                job.get("company", ""),
-                job.get("location", "Remote"),
-                job.get("status", "Scraped"),
-                job.get("url", ""),
-            ]
-        )
+        existing.add(key)
+        rows_to_add.append([
+            datetime.datetime.utcnow().strftime("%Y-%m-%d %H:%M"),
+            job.get("platform", ""),
+            job.get("title", ""),
+            job.get("company", ""),
+            job.get("location", "Remote"),
+            job.get("status", "Scraped"),
+            job.get("url", ""),
+        ])
 
     if rows_to_add:
         ws.append_rows(rows_to_add, value_input_option="USER_ENTERED")
