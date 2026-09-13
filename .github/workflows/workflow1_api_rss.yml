@@ -2,7 +2,7 @@ name: "Workflow 1 — API & RSS Scrapers"
 
 on:
   schedule:
-    - cron: "0 */6 * * *"   # Every 6 hours
+    - cron: "0 */6 * * *"
   workflow_dispatch:
 
 jobs:
@@ -33,10 +33,6 @@ jobs:
 
       - name: Install dependencies
         run: pip install -r requirements.txt
-
-      - name: Write Google service account JSON
-        run: |
-            echo "GOOGLE_SERVICE_ACCOUNT_JSON=${{ secrets.GOOGLE_SERVICE_ACCOUNT_JSON }}" >> $GITHUB_ENV
 
       - name: Run RemoteOK
         run: python -m agents.api_scrapers.remoteok
