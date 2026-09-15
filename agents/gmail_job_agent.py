@@ -1,6 +1,6 @@
 import os, re, json, html
 from datetime import datetime, timezone
-from urllib.parse import urlparse, urlunparse
+from urllib.parse import urlparse
 
 import requests
 from bs4 import BeautifulSoup
@@ -17,9 +17,11 @@ GOOGLE_SHEET_ID = os.getenv("GOOGLE_SHEET_ID")
 GMAIL_SCOPES = ["https://www.googleapis.com/auth/gmail.readonly"]
 SHEET_SCOPES = ["https://spreadsheets.google.com/feeds", "https://www.googleapis.com/auth/drive"]
 
-HEADERS = ["Date","Platform","Job Title","Company","Location","Stipend / Salary",
-           "Duration","Application Deadline","Job URL","Email Subject","Email Sender",
-           "Gmail Message ID","Account","Full Job Description","Status"]
+HEADERS = [
+    "Date", "Source", "Platform", "Email ID", "Job Title", "Company",
+    "Location", "Stipend", "Duration", "Match %", "Job URL", "JD URL",
+    "Resume URL", "Cover Letter URL", "Status", "Processed At"
+]
 
 PLATFORMS = {
     "internshala": ["internshala.com"], "linkedin": ["linkedin.com"],
@@ -29,13 +31,13 @@ PLATFORMS = {
     "unstop": ["unstop.com"], "yc jobs": ["ycombinator.com/jobs"],
     "remote ok": ["remoteok.com"], "remotive": ["remotive.com"],
     "himalayas": ["himalayas.app"], "simplify jobs": ["simplify.jobs"],
-    "we work remotely": ["weworkremotely.com"],
+    "we work remotely": ["weworkremotely.com"], "aicte": ["aicte-india.org"],
 }
 
 JOB_WORDS = re.compile(
     r"\b(job|jobs|hiring|internship|intern|developer|engineer|"
     r"software|backend|frontend|data|machine learning|ai|career|"
-    r"vacancy|opportunity|apply|opening|recruitment)\b", re.I)
+    r"vacancy|opportunity|apply|opening|recruitment|role|position)\b", re.I)
 
 URL_RE = re.compile(r'https?://[^\s<>"\']+', re.I)
 
@@ -72,21 +74,24 @@ def pick_job_url(urls):
                 if d in url:
                     return url
     for url in urls:
-        if any(k in url for k in ["job", "intern", "career", "apply", "opening"]):
+        if any(k in url for k in ["job", "intern", "career", "apply", "opening", "role"]):
             return url
     return urls[0] if urls else ""
 
 
 def get_body(msg):
+    import base64
     def _decode(data):
-        import base64
         return base64.urlsafe_b64decode(data + "==").decode("utf-8", errors="ignore")
 
     payload = msg.get("payload", {})
     parts = payload.get("parts", [])
     if not parts:
-        body_data = payload.get("body", {}).get("data", "")
-        return html.unescape(BeautifulSoup(_decode(body_data), "html.parser").get_text(" ")) if body_data else ""
+        data = payload.get("body", {}).get("data", "")
+        if data:
+            decoded = _decode(data)
+            return html.unescape(BeautifulSoup(decoded, "html.parser").get_text(" "))
+        return ""
 
     text = ""
     for part in parts:
@@ -110,9 +115,21 @@ def fetch_page_text(url):
         return ""
 
 
+def extract_title_company(page_text, subject):
+    # Simple extraction from subject
+    title = ""
+    company = ""
+    # Try patterns like "Role @ Company" or "Role at Company"
+    m = re.search(r"(.+?)\s+[@at]+\s+(.+)", subject, re.I)
+    if m:
+        title = m.group(1).strip()[:80]
+        company = m.group(2).strip()[:80]
+    return title, company
+
+
 def fetch_jobs_from_account(service, account_label):
     jobs = []
-    query = "newer_than:7d (job OR internship OR hiring OR developer OR engineer OR career)"
+    query = "newer_than:7d (job OR internship OR hiring OR developer OR engineer OR career OR opportunity)"
     try:
         result = service.users().messages().list(userId="me", q=query, maxResults=50).execute()
         messages = result.get("messages", [])
@@ -123,10 +140,10 @@ def fetch_jobs_from_account(service, account_label):
     for m in messages:
         try:
             msg = service.users().messages().get(userId="me", id=m["id"], format="full").execute()
-            headers = {h["name"]: h["value"] for h in msg.get("payload", {}).get("headers", [])}
-            subject = headers.get("Subject", "")
-            sender = headers.get("From", "")
-            date_str = headers.get("Date", "")
+            hdrs = {h["name"]: h["value"] for h in msg.get("payload", {}).get("headers", [])}
+            subject = hdrs.get("Subject", "")
+            sender = hdrs.get("From", "")
+            date_str = hdrs.get("Date", "")
             body = get_body(msg)
 
             if not JOB_WORDS.search(subject + " " + body[:500]):
@@ -139,27 +156,31 @@ def fetch_jobs_from_account(service, account_label):
             job_url = pick_job_url(urls)
             platform = detect_platform(job_url)
             page_text = fetch_page_text(job_url)
+            title, company = extract_title_company(page_text or body, subject)
+
+            processed_at = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
 
             jobs.append({
                 "date": date_str,
+                "source": "Gmail",
                 "platform": platform,
-                "title": "",
-                "company": "",
+                "email_id": m["id"],
+                "title": title,
+                "company": company,
                 "location": "",
                 "stipend": "",
                 "duration": "",
-                "deadline": "",
+                "match": "",
                 "job_url": job_url,
-                "subject": subject,
-                "sender": sender,
-                "msg_id": m["id"],
-                "account": account_label,
-                "description": page_text[:1000],
+                "jd_url": "",
+                "resume_url": "",
+                "cover_letter_url": "",
                 "status": "New",
+                "processed_at": processed_at,
             })
             print(f"[{account_label}] Found: {subject[:60]}")
         except Exception as e:
-            print(f"[{account_label}] Error processing message: {e}")
+            print(f"[{account_label}] Error: {e}")
             continue
 
     return jobs
@@ -178,23 +199,29 @@ def write_to_sheet(jobs):
     try:
         ws = sh.worksheet("Gmail Jobs")
     except Exception:
-        ws = sh.add_worksheet(title="Gmail Jobs", rows=1000, cols=20)
-        ws.append_row(HEADERS)
+        ws = sh.add_worksheet(title="Gmail Jobs", rows=2000, cols=20)
 
-    existing = ws.col_values(10)  # Gmail Message ID column (index 12 = col 12, 0-based col 9)
-    existing_ids = set(existing[1:])
+    # Check if header row exists
+    existing_data = ws.get_all_values()
+    if not existing_data or existing_data[0] != HEADERS:
+        ws.clear()
+        ws.append_row(HEADERS)
+        existing_ids = set()
+    else:
+        # Email ID is column 4 (index 3)
+        existing_ids = set(row[3] for row in existing_data[1:] if len(row) > 3)
 
     added = 0
     for job in jobs:
-        if job["msg_id"] in existing_ids:
+        if job["email_id"] in existing_ids:
             continue
         ws.append_row([
-            job["date"], job["platform"], job["title"], job["company"],
-            job["location"], job["stipend"], job["duration"], job["deadline"],
-            job["job_url"], job["subject"], job["sender"], job["msg_id"],
-            job["account"], job["description"], job["status"],
+            job["date"], job["source"], job["platform"], job["email_id"],
+            job["title"], job["company"], job["location"], job["stipend"],
+            job["duration"], job["match"], job["job_url"], job["jd_url"],
+            job["resume_url"], job["cover_letter_url"], job["status"], job["processed_at"],
         ])
-        existing_ids.add(job["msg_id"])
+        existing_ids.add(job["email_id"])
         added += 1
 
     print(f"Sheet updated: {added} new jobs added.")
@@ -208,14 +235,14 @@ def main():
         svc = make_gmail_client(GMAIL_TOKEN_1_JSON)
         all_jobs += fetch_jobs_from_account(svc, "account_1")
     else:
-        print("GMAIL_TOKEN_1_JSON not set — skipping account 1.")
+        print("GMAIL_TOKEN_1_JSON not set — skipping.")
 
     if GMAIL_TOKEN_2_JSON:
         print("Processing Account 2...")
         svc = make_gmail_client(GMAIL_TOKEN_2_JSON)
         all_jobs += fetch_jobs_from_account(svc, "account_2")
     else:
-        print("GMAIL_TOKEN_2_JSON not set — skipping account 2.")
+        print("GMAIL_TOKEN_2_JSON not set — skipping.")
 
     print(f"Total jobs found: {len(all_jobs)}")
 
