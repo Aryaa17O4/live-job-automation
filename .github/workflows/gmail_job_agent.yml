@@ -1,0 +1,36 @@
+name: Gmail Job Agent
+
+on:
+  schedule:
+    - cron: '30 3 * * *'  # 9:00 AM IST
+  workflow_dispatch:
+
+jobs:
+  gmail-jobs:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repo
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install dependencies
+        run: pip install -r requirements-gmail.txt
+
+      - name: Run Gmail Job Agent
+        env:
+          GMAIL_TOKEN_1_JSON: ${{ secrets.GMAIL_TOKEN_1_JSON }}
+          GMAIL_TOKEN_2_JSON: ${{ secrets.GMAIL_TOKEN_2_JSON }}
+          GOOGLE_CREDENTIALS: ${{ secrets.GOOGLE_CREDENTIALS }}
+          GOOGLE_SHEET_ID: ${{ secrets.GOOGLE_SHEET_ID }}
+        run: python agents/gmail_job_agent.py
+
+      - name: Upload results
+        uses: actions/upload-artifact@v4
+        with:
+          name: gmail-jobs
+          path: gmail_jobs.json
+          if-no-files-found: ignore
