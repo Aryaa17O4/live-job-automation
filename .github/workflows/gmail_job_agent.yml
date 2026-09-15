@@ -24,7 +24,7 @@ jobs:
         env:
           GMAIL_TOKEN_1_JSON: ${{ secrets.GMAIL_TOKEN_1_JSON }}
           GMAIL_TOKEN_2_JSON: ${{ secrets.GMAIL_TOKEN_2_JSON }}
-          GOOGLE_CREDENTIALS: ${{ secrets.GOOGLE_CREDENTIALS }}
+          GOOGLE_CREDENTIALS: ${{ secrets.GOOGLE_SERVICE_ACCOUNT_JSON }}
           GOOGLE_SHEET_ID: ${{ secrets.GOOGLE_SHEET_ID }}
         run: python agents/gmail_job_agent.py
 

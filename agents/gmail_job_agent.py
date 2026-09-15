@@ -11,7 +11,7 @@ from googleapiclient.discovery import build
 
 GMAIL_TOKEN_1_JSON = os.getenv("GMAIL_TOKEN_1_JSON")
 GMAIL_TOKEN_2_JSON = os.getenv("GMAIL_TOKEN_2_JSON")
-GOOGLE_CREDENTIALS = os.getenv("GOOGLE_CREDENTIALS")
+GOOGLE_CREDENTIALS = os.getenv("GOOGLE_SERVICE_ACCOUNT_JSON")
 GOOGLE_SHEET_ID = os.getenv("GOOGLE_SHEET_ID")
 
 GMAIL_SCOPES = ["https://www.googleapis.com/auth/gmail.readonly"]
