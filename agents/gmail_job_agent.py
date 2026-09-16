@@ -1,20 +1,11 @@
 """
-gmail_job_agent.py
-------------------
-Scrapes two Gmail accounts for job postings, extracts metadata,
-scores each against Aryan's resume, and logs to Google Sheets.
-
-Column schema (16 cols):
-  Date | Source | Platform | Email ID | Job Title | Company | Location |
-  Stipend | Duration | Match % | Job URL | JD URL | Resume URL |
-  Cover Letter URL | Status | Processed At
+gmail_job_agent.py — v3 STRICT
+Scrapes Gmail for genuine job/internship emails only.
+3-layer filter: sender blocklist + subject blocklist + body keyword check
+Match % powered by resume_tailor.py
 """
 
-import os
-import re
-import base64
-import datetime
-import threading
+import os, re, base64, datetime, threading
 from http.server import HTTPServer, BaseHTTPRequestHandler
 from urllib.parse import urlparse, parse_qs
 from typing import Optional
@@ -25,7 +16,6 @@ from google.oauth2.credentials import Credentials
 from google_auth_oauthlib.flow import InstalledAppFlow
 from googleapiclient.discovery import build
 
-# ── local module ──────────────────────────────────────────────────────────
 from resume_tailor import calculate_match, get_match_label
 
 # ── Config ────────────────────────────────────────────────────────────────
@@ -34,26 +24,15 @@ SCOPES = [
     "https://www.googleapis.com/auth/spreadsheets",
 ]
 
-SHEET_ID    = os.environ.get("GOOGLE_SHEET_ID", "")
-CREDS_FILE  = os.environ.get("GOOGLE_CREDS_FILE", "credentials.json")
+SHEET_ID   = os.environ.get("GOOGLE_SHEET_ID", "")
+CREDS_FILE = os.environ.get("GOOGLE_CREDS_FILE", "credentials.json")
 
-# Two Gmail accounts — set via environment variables
 ACCOUNTS = [
-    {
-        "label":   os.environ.get("GMAIL_LABEL_1", "Primary"),
-        "token":   os.environ.get("GMAIL_TOKEN_1", "token_1.json"),
-    },
-    {
-        "label":   os.environ.get("GMAIL_LABEL_2", "Secondary"),
-        "token":   os.environ.get("GMAIL_TOKEN_2", "token_2.json"),
-    },
+    {"label": os.environ.get("GMAIL_LABEL_1", "Primary"),
+     "token": os.environ.get("GMAIL_TOKEN_1", "token_1.json")},
+    {"label": os.environ.get("GMAIL_LABEL_2", "Secondary"),
+     "token": os.environ.get("GMAIL_TOKEN_2", "token_2.json")},
 ]
-
-# Search query used in Gmail API
-GMAIL_QUERY = (
-    "subject:(internship OR hiring OR job OR apply OR opportunity OR role OR position) "
-    "newer_than:7d"
-)
 
 SHEET_HEADERS = [
     "Date", "Source", "Platform", "Email ID", "Job Title", "Company",
@@ -61,7 +40,121 @@ SHEET_HEADERS = [
     "Resume URL", "Cover Letter URL", "Status", "Processed At",
 ]
 
-# ── ThreadedHTTPServer for OAuth (avoids 502 proxy timeouts) ──────────────
+# ── STRICT Gmail search query ─────────────────────────────────────────────
+# Only emails where subject explicitly mentions hiring/internship terms
+# Hard-excludes GitHub, OTP, invoices, newsletters at the API level
+GMAIL_QUERY = (
+    "("
+      "subject:(internship) OR "
+      "subject:(\"we are hiring\") OR "
+      "subject:(\"job opening\") OR "
+      "subject:(\"hiring for\") OR "
+      "subject:(\"apply now\") OR "
+      "subject:(\"job opportunity\") OR "
+      "subject:(\"exciting opportunity\") OR "
+      "subject:(\"open position\") OR "
+      "subject:(\"new jobs\") OR "
+      "subject:(\"career opportunity\") OR "
+      "subject:(\"we're hiring\") OR "
+      "subject:(fresher) OR "
+      "subject:(recruitment) OR "
+      "subject:(\"job alert\")"
+    ") "
+    "newer_than:14d "
+    "-from:noreply@github.com "
+    "-from:notifications@github.com "
+    "-from:no-reply@github.com "
+    "-from:no-reply@accounts.google.com "
+    "-from:no-reply@google.com "
+    "-from:mailer@linkedin.com "
+    "-from:jobs-noreply@linkedin.com "
+    "-subject:(OTP) "
+    "-subject:(\"verification code\") "
+    "-subject:(\"GitHub Actions\") "
+    "-subject:(workflow) "
+    "-subject:(\"pull request\") "
+    "-subject:(merged) "
+    "-subject:(invoice) "
+    "-subject:(receipt) "
+    "-subject:(payment) "
+    "-subject:(newsletter) "
+    "-subject:(\"password reset\") "
+    "-subject:(\"security alert\") "
+    "-subject:(\"personal access token\") "
+)
+
+# ── 3-Layer Filter ────────────────────────────────────────────────────────
+
+# Layer 1: Block these senders always
+BLOCKED_SENDERS = [
+    "github.com", "github.io",
+    "no-reply@", "noreply@",
+    "accounts.google.com",
+    "mailer@linkedin", "jobs-noreply@linkedin",
+    "swiggy", "zomato", "amazon", "flipkart",
+    "myntra", "meesho", "ajio",
+    "coursera", "udemy", "edureka",
+    "razorpay.com",
+]
+
+# Layer 2: Block these subject patterns always
+BLOCKED_SUBJECTS = [
+    "github actions", "workflow run", "pull request",
+    "build failed", "build passed", "merged",
+    "otp", "one time password", "verification code",
+    "password reset", "forgot password",
+    "invoice", "receipt", "payment successful",
+    "order confirmed", "your order",
+    "newsletter", "weekly digest", "daily digest",
+    "security alert", "new device", "sign-in",
+    "personal access token", "token added",
+    "unsubscribe", "promotional",
+]
+
+# Layer 3: Subject must have at least 1 of these
+REQUIRED_SUBJECT = [
+    "intern", "internship", "hiring", "job", "opportunity",
+    "position", "opening", "vacancy", "career", "apply",
+    "role", "recruit", "stipend", "fresher", "placement",
+]
+
+# Layer 3: Body must have at least 2 of these
+REQUIRED_BODY = [
+    "intern", "internship", "apply", "application",
+    "stipend", "salary", "compensation", "ctc",
+    "job description", "responsibilities", "qualifications",
+    "we are looking", "we're hiring", "join our team",
+    "skills required", "requirements",
+    "location", "remote", "hybrid", "onsite",
+    "duration", "months",
+]
+
+
+def _is_job_email(sender: str, subject: str, body: str) -> bool:
+    s = sender.lower()
+    sub = subject.lower()
+    bod = body[:1500].lower()
+
+    # Layer 1 — sender block
+    if any(b in s for b in BLOCKED_SENDERS):
+        return False
+
+    # Layer 2 — subject block
+    if any(b in sub for b in BLOCKED_SUBJECTS):
+        return False
+
+    # Layer 3a — subject must have a job keyword
+    if not any(kw in sub for kw in REQUIRED_SUBJECT):
+        return False
+
+    # Layer 3b — body must have at least 2 job phrases
+    if sum(1 for kw in REQUIRED_BODY if kw in bod) < 2:
+        return False
+
+    return True
+
+
+# ── ThreadedHTTPServer for OAuth (avoids 502 proxy timeouts) ─────────────
 class _OAuthHandler(BaseHTTPRequestHandler):
     auth_code: Optional[str] = None
 
@@ -70,26 +163,24 @@ class _OAuthHandler(BaseHTTPRequestHandler):
         _OAuthHandler.auth_code = params.get("code", [None])[0]
         self.send_response(200)
         self.end_headers()
-        self.wfile.write(b"Auth complete. You may close this tab.")
+        self.wfile.write(b"Auth complete. Close this tab.")
 
-    def log_message(self, *args):
-        pass  # suppress request noise
+    def log_message(self, *args): pass
+
 
 class ThreadedOAuthServer(HTTPServer):
-    def __init__(self, server_address, handler):
-        super().__init__(server_address, handler)
-        self._thread = threading.Thread(target=self.serve_forever, daemon=True)
+    def __init__(self, addr, handler):
+        super().__init__(addr, handler)
+        self._t = threading.Thread(target=self.serve_forever, daemon=True)
 
-    def start(self):
-        self._thread.start()
+    def start(self): self._t.start()
 
-    def wait_for_code(self, timeout=120) -> Optional[str]:
-        self._thread.join(timeout)
+    def wait_for_code(self, timeout=180):
+        self._t.join(timeout)
         return _OAuthHandler.auth_code
 
 
-# ── Auth helpers ──────────────────────────────────────────────────────────
-
+# ── Auth ──────────────────────────────────────────────────────────────────
 def _get_credentials(token_path: str) -> Credentials:
     creds = None
     if os.path.exists(token_path):
@@ -101,41 +192,34 @@ def _get_credentials(token_path: str) -> Credentials:
         _save_token(creds, token_path)
         return creds
 
-    # Fresh OAuth flow via ThreadedHTTPServer
     flow = InstalledAppFlow.from_client_secrets_file(
-        CREDS_FILE, SCOPES,
-        redirect_uri="http://localhost:8765"
+        CREDS_FILE, SCOPES, redirect_uri="http://localhost:8765"
     )
     auth_url, _ = flow.authorization_url(prompt="consent")
-    print(f"\nOpen this URL to authenticate:\n{auth_url}\n")
-
-    server = ThreadedOAuthServer(("localhost", 8765), _OAuthHandler)
-    server.start()
-    code = server.wait_for_code(timeout=180)
-    server.shutdown()
-
+    print(f"\nOpen to authenticate:\n{auth_url}\n")
+    srv = ThreadedOAuthServer(("localhost", 8765), _OAuthHandler)
+    srv.start()
+    code = srv.wait_for_code()
+    srv.shutdown()
     if not code:
-        raise RuntimeError("OAuth timeout — no auth code received.")
-
+        raise RuntimeError("OAuth timeout.")
     flow.fetch_token(code=code)
     creds = flow.credentials
     _save_token(creds, token_path)
     return creds
 
 
-def _save_token(creds: Credentials, path: str):
+def _save_token(creds, path):
     with open(path, "w") as f:
         f.write(creds.to_json())
 
 
 # ── Gmail helpers ─────────────────────────────────────────────────────────
-
-def _get_email_body(payload: dict) -> str:
-    """Recursively decode email body from MIME payload."""
+def _get_body(payload: dict) -> str:
     body = ""
     if "parts" in payload:
         for part in payload["parts"]:
-            body += _get_email_body(part)
+            body += _get_body(part)
     elif payload.get("mimeType") in ("text/plain", "text/html"):
         data = payload.get("body", {}).get("data", "")
         if data:
@@ -143,279 +227,251 @@ def _get_email_body(payload: dict) -> str:
     return body
 
 
-def _extract_header(headers: list, name: str) -> str:
+def _hdr(headers, name):
     for h in headers:
         if h["name"].lower() == name.lower():
             return h["value"]
     return ""
 
 
-# ── Metadata extraction from email body ───────────────────────────────────
-
-_STIPEND_PATTERNS = [
-    r"stipend[:\s]+(?:rs\.?|inr|₹)?\s*(\d[\d,]*)\s*(?:/-|per\s*month|p\.?m\.?|/month)?",
-    r"(?:rs\.?|inr|₹)\s*(\d[\d,]+)\s*(?:/-|per\s*month|p\.?m\.?|/month)",
-    r"(\d[\d,]+)\s*(?:rs\.?|inr|₹)\s*(?:per\s*month|p\.?m\.?)?",
-    r"salary[:\s]+(?:rs\.?|inr|₹)?\s*(\d[\d,]*)",
-    r"compensation[:\s]+(?:rs\.?|inr|₹)?\s*(\d[\d,]*)",
-    r"(\d{4,6})\s*/\s*(?:month|mo)",
-    r"usd?\s*(\d[\d,]+)",
-    r"\$\s*(\d[\d,]+)",
-]
-
-_LOCATION_PATTERNS = [
-    r"location[:\s]+([A-Za-z ,/]+?)(?:\n|,\s*(?:india|remote|hybrid)|$)",
-    r"(?:based in|office at|located at|work from)[:\s]+([A-Za-z ,]+?)(?:\n|\.)",
-    r"\b(remote|work from home|wfh|hybrid|on-?site)\b",
-    r"\b(bangalore|bengaluru|mumbai|delhi|noida|gurugram|gurgaon|pune|hyderabad|chennai|kolkata|ahmedabad)\b",
-]
-
-_DURATION_PATTERNS = [
-    r"duration[:\s]+(\d+\s*(?:month|week|year)s?)",
-    r"(\d+)[- ](?:month|week|year)[s]?\s*internship",
-    r"internship\s+(?:of\s+)?(\d+\s*(?:month|week)s?)",
-    r"(\d+)[- ](?:month|week)[s]?\s+(?:contract|role|position)",
-]
-
-_URL_PATTERNS = [
-    r"https?://[^\s\)\]\>\"\']+",
-]
-
-_PLATFORM_KEYWORDS = {
-    "LinkedIn":    ["linkedin"],
-    "Internshala": ["internshala"],
-    "Wellfound":   ["wellfound", "angel.co", "angellist"],
-    "Naukri":      ["naukri"],
-    "Indeed":      ["indeed"],
-    "Unstop":      ["unstop", "dare2compete"],
-    "Glassdoor":   ["glassdoor"],
-    "GitHub":      ["github"],
-    "Email/Direct": [],            # fallback
-}
-
-_COMPANY_PATTERNS = [
-    r"(?:at|from|with|join)\s+([A-Z][A-Za-z0-9 &\-\.]+?)(?:\s+is|\s+are|\s+has|[,\.\n])",
-    r"([A-Z][A-Za-z0-9 &\-\.]+?)\s+(?:Pvt\.?\s*Ltd\.?|Private Limited|Technologies|Tech|Software|Solutions|Labs|Studios)",
-    r"company[:\s]+([A-Za-z0-9 &\-\.]+)",
-    r"organisation[:\s]+([A-Za-z0-9 &\-\.]+)",
-    r"employer[:\s]+([A-Za-z0-9 &\-\.]+)",
-]
-
-
-def _extract_field(patterns: list[str], text: str, group: int = 1, flags: int = re.IGNORECASE) -> str:
+# ── Metadata extractors ───────────────────────────────────────────────────
+def _find(patterns, text, group=1):
     for p in patterns:
-        m = re.search(p, text, flags)
+        m = re.search(p, text, re.IGNORECASE)
         if m:
             try:
                 return m.group(group).strip()
-            except IndexError:
+            except Exception:
                 return m.group(0).strip()
     return ""
 
 
-def _detect_platform(subject: str, body: str, sender: str) -> str:
-    combined = (subject + " " + body + " " + sender).lower()
-    for platform, keywords in _PLATFORM_KEYWORDS.items():
-        if any(kw in combined for kw in keywords):
-            return platform
+STIPEND_RE = [
+    r"stipend[:\s]+(?:rs\.?|inr|₹)?\s*(\d[\d,]+)",
+    r"(?:rs\.?|inr|₹)\s*(\d[\d,]+)\s*(?:/-|per\s*month|p\.?m\.?|/month)?",
+    r"(\d{4,6})\s*/\s*(?:month|mo)\b",
+    r"salary[:\s]+(?:rs\.?|inr|₹)?\s*(\d[\d,]+)",
+    r"\$\s*(\d[\d,]+)",
+]
+
+LOCATION_RE = [
+    r"location[:\s]+([A-Za-z ,/\-]+?)(?:\n|\.|\|)",
+    r"\b(remote|work from home|wfh|hybrid|on-?site)\b",
+    r"\b(bangalore|bengaluru|mumbai|delhi|noida|gurugram|gurgaon|pune"
+    r"|hyderabad|chennai|kolkata|ahmedabad|jaipur|indore)\b",
+]
+
+DURATION_RE = [
+    r"duration[:\s]+(\d+\s*(?:month|week|year)s?)",
+    r"(\d+)[- ](?:month|week)[s]?\s*internship",
+    r"internship\s+(?:of\s+)?(\d+\s*(?:month|week)s?)",
+]
+
+COMPANY_RE = [
+    r"company[:\s]+([A-Za-z0-9 &\-\.]+)",
+    r"organisation[:\s]+([A-Za-z0-9 &\-\.]+)",
+    r"([A-Z][A-Za-z0-9 &\-]+?)\s+(?:Pvt\.?\s*Ltd\.?|Private Limited"
+    r"|Technologies|Tech|Software|Solutions|Labs|Inc\.?)",
+    r"(?:at|from|join)\s+([A-Z][A-Za-z0-9 &\-]+?)\s+(?:as|for|–|-)",
+]
+
+PLATFORM_MAP = {
+    "LinkedIn":    ["linkedin.com"],
+    "Internshala": ["internshala.com"],
+    "Wellfound":   ["wellfound.com", "angel.co"],
+    "Naukri":      ["naukri.com"],
+    "Indeed":      ["indeed.com"],
+    "Unstop":      ["unstop.com"],
+    "Glassdoor":   ["glassdoor.com"],
+    "Cutshort":    ["cutshort.io"],
+    "Hirist":      ["hirist.tech"],
+}
+
+
+def _platform(subject, body, sender):
+    txt = (subject + body[:300] + sender).lower()
+    for name, domains in PLATFORM_MAP.items():
+        if any(d in txt for d in domains):
+            return name
     return "Email/Direct"
 
 
-def _extract_job_url(body: str) -> str:
-    """Return the most job-relevant URL from the body."""
-    urls = re.findall(_URL_PATTERNS[0], body)
-    # Prefer URLs that look like job posts
-    for url in urls:
-        ul = url.lower()
-        if any(kw in ul for kw in ["job", "internship", "apply", "career", "position", "opening", "role"]):
-            return url.rstrip(".,;)")
+def _job_url(body):
+    urls = re.findall(r"https?://[^\s\)\]\>\"\']+", body)
+    for u in urls:
+        if any(k in u.lower() for k in
+               ["job", "intern", "apply", "career", "position", "opening", "vacancy"]):
+            return u.rstrip(".,;)")
     return urls[0].rstrip(".,;)") if urls else ""
 
 
-def _extract_job_title(subject: str, body: str) -> str:
-    """Pull job title from subject or first 500 chars of body."""
-    # Try subject line first
-    title_m = re.search(
+def _job_title(subject, body):
+    # Try subject patterns
+    for pat in [
         r"(?:hiring|opening|position|role|internship|vacancy)[:\s]+([^\|\-\n]{5,60})",
-        subject, re.IGNORECASE
+        r"(?:for|–|-)\s+([A-Za-z /\-&]{5,50})\s+(?:intern|role|position|developer|engineer)",
+    ]:
+        m = re.search(pat, subject, re.IGNORECASE)
+        if m:
+            return m.group(1).strip()
+
+    # Try body
+    m = re.search(
+        r"(?:position|role|title|opening)[:\s]+([A-Za-z /\-&]{5,50})(?:\n|at\s|,)",
+        body[:400], re.IGNORECASE
     )
-    if title_m:
-        return title_m.group(1).strip()
+    if m:
+        return m.group(1).strip()
 
-    body_snippet = body[:500]
-    title_m = re.search(
-        r"(?:position|role|title|opening|job)[:\s]+([A-Za-z /\-&]+?)(?:\n|at\s|@\s|for\s|,)",
-        body_snippet, re.IGNORECASE
-    )
-    if title_m:
-        return title_m.group(1).strip()
-
-    # Fallback: clean up subject
-    clean = re.sub(r"(?i)(re:|fw:|fwd:|internship at|hiring for|opening for|opportunity:)", "", subject).strip()
-    return clean[:80] if clean else subject[:80]
+    # Fallback: clean subject
+    clean = re.sub(
+        r"(?i)(re:|fw:|fwd:|internship at|hiring for|opening for|opportunity:|job alert:?)",
+        "", subject
+    ).strip()
+    return clean[:80] or subject[:80]
 
 
-# ── Google Sheets helpers ─────────────────────────────────────────────────
-
-def _get_sheet(creds: Credentials) -> gspread.Worksheet:
+# ── Sheets ────────────────────────────────────────────────────────────────
+def _get_sheet(creds):
     gc = gspread.authorize(creds)
     sh = gc.open_by_key(SHEET_ID)
     try:
         ws = sh.worksheet("Jobs")
     except gspread.WorksheetNotFound:
-        ws = sh.add_worksheet(title="Jobs", rows=1000, cols=len(SHEET_HEADERS))
+        ws = sh.add_worksheet("Jobs", 1000, len(SHEET_HEADERS))
         ws.append_row(SHEET_HEADERS)
     return ws
 
 
-def _get_existing_email_ids(ws: gspread.Worksheet) -> set[str]:
+def _existing_ids(ws):
     try:
-        col_idx = SHEET_HEADERS.index("Email ID") + 1
-        return set(ws.col_values(col_idx)[1:])    # skip header
+        idx = SHEET_HEADERS.index("Email ID") + 1
+        return set(ws.col_values(idx)[1:])
     except Exception:
         return set()
 
 
-# ── Core processing ───────────────────────────────────────────────────────
-
-def _process_message(
-    msg_id: str,
-    gmail_svc,
-    ws: gspread.Worksheet,
-    existing_ids: set[str],
-    account_label: str,
-) -> bool:
-    """Fetch, parse, score, and append one email. Returns True if logged."""
-
-    if msg_id in existing_ids:
+# ── Process one message ───────────────────────────────────────────────────
+def _process(msg_id, svc, ws, seen, label):
+    if msg_id in seen:
         return False
 
-    msg = gmail_svc.users().messages().get(
-        userId="me", id=msg_id, format="full"
-    ).execute()
+    msg     = svc.users().messages().get(userId="me", id=msg_id, format="full").execute()
+    payload = msg["payload"]
+    headers = payload.get("headers", [])
+    subject = _hdr(headers, "Subject")
+    sender  = _hdr(headers, "From")
+    date_s  = _hdr(headers, "Date")
+    body    = _get_body(payload)
+    plain   = re.sub(r"<[^>]+>", " ", body)   # strip HTML
 
-    payload  = msg["payload"]
-    headers  = payload.get("headers", [])
-    subject  = _extract_header(headers, "Subject")
-    sender   = _extract_header(headers, "From")
-    date_str = _extract_header(headers, "Date")
-    body     = _get_email_body(payload)
-    body_plain = re.sub(r"<[^>]+>", " ", body)   # strip HTML tags
-
-    # ── Filter: skip obvious non-job emails ──────────────────────────────
-    combined_lower = (subject + " " + body_plain[:300]).lower()
-    job_signals = [
-        "intern", "hiring", "apply", "application", "job", "role",
-        "position", "opening", "opportunity", "career", "vacancy",
-        "stipend", "salary", "compensation"
-    ]
-    if not any(sig in combined_lower for sig in job_signals):
+    # ── 3-Layer filter ────────────────────────────────────────────────────
+    if not _is_job_email(sender, subject, plain):
+        print(f"  ✗ Skipped: {subject[:55]}")
         return False
 
-    # ── Extract metadata ─────────────────────────────────────────────────
-    job_title = _extract_job_title(subject, body_plain)
-    company   = _extract_field(_COMPANY_PATTERNS, body_plain) or sender.split("<")[0].strip()
-    location  = _extract_field(_LOCATION_PATTERNS, body_plain)
-    stipend   = _extract_field(_STIPEND_PATTERNS, body_plain)
-    duration  = _extract_field(_DURATION_PATTERNS, body_plain)
-    platform  = _detect_platform(subject, body_plain, sender)
-    job_url   = _extract_job_url(body_plain)
+    # ── Extract ───────────────────────────────────────────────────────────
+    title    = _job_title(subject, plain)
+    company  = _find(COMPANY_RE, plain) or sender.split("<")[0].strip()
+    location = _find(LOCATION_RE, plain)
+    stipend  = _find(STIPEND_RE, plain)
+    duration = _find(DURATION_RE, plain)
+    platform = _platform(subject, plain, sender)
+    url      = _job_url(plain)
 
-    # Normalise stipend — add ₹ prefix if it's a bare number
-    if stipend and stipend.isdigit():
-        stipend = f"₹{stipend}"
-    elif stipend and stipend[0].isdigit():
+    if stipend and stipend[0].isdigit():
         stipend = f"₹{stipend}"
 
-    # ── Match scoring ─────────────────────────────────────────────────────
-    match_pct = calculate_match(body_plain, job_title)
+    # ── Match % ───────────────────────────────────────────────────────────
+    match_pct   = calculate_match(plain, title)
     match_label = get_match_label(match_pct)
 
-    # ── Parse date ───────────────────────────────────────────────────────
+    # Skip very weak matches (not relevant at all)
+    if match_pct < 15:
+        print(f"  ✗ Low match ({match_pct}%): {title[:45]}")
+        return False
+
+    # ── Date ──────────────────────────────────────────────────────────────
     try:
         from email.utils import parsedate_to_datetime
-        dt = parsedate_to_datetime(date_str)
-        date_formatted = dt.strftime("%Y-%m-%d")
+        date_fmt = parsedate_to_datetime(date_s).strftime("%Y-%m-%d")
     except Exception:
-        date_formatted = datetime.date.today().isoformat()
+        date_fmt = datetime.date.today().isoformat()
 
-    processed_at = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    now = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
 
     row = [
-        date_formatted,                    # Date
-        account_label,                     # Source (which Gmail account)
-        platform,                          # Platform
-        msg_id,                            # Email ID
-        job_title,                         # Job Title
-        company,                           # Company
-        location,                          # Location
-        stipend,                           # Stipend
-        duration,                          # Duration
-        f"{match_pct}% ({match_label})",   # Match %
-        job_url,                           # Job URL
-        "",                                # JD URL (manual)
-        "",                                # Resume URL (manual)
-        "",                                # Cover Letter URL (manual)
-        "New",                             # Status
-        processed_at,                      # Processed At
+        date_fmt,
+        label,
+        platform,
+        msg_id,
+        title,
+        company,
+        location,
+        stipend,
+        duration,
+        f"{match_pct}% ({match_label})",
+        url,
+        "", "", "",
+        "New",
+        now,
     ]
 
     ws.append_row(row, value_input_option="USER_ENTERED")
-    existing_ids.add(msg_id)
-    print(f"  ✔ Logged: {job_title[:50]} | {match_pct}% | {company[:30]}")
+    seen.add(msg_id)
+    print(f"  ✔ {match_pct}% | {title[:40]} | {company[:25]}")
     return True
 
 
+# ── Main ──────────────────────────────────────────────────────────────────
 def run_agent():
     print("=" * 60)
-    print("Job Agent starting…")
+    print("Job Agent v3 — Strict Filter")
     print("=" * 60)
 
     if not SHEET_ID:
-        raise ValueError("GOOGLE_SHEET_ID env var is not set.")
+        raise ValueError("GOOGLE_SHEET_ID not set.")
 
-    total_logged = 0
+    total = 0
+    for acc in ACCOUNTS:
+        label, token = acc["label"], acc["token"]
 
-    for account in ACCOUNTS:
-        label      = account["label"]
-        token_path = account["token"]
-
-        if not os.path.exists(token_path) and not os.path.exists(CREDS_FILE):
-            print(f"[{label}] Skipping — no credentials found.")
+        if not os.path.exists(token) and not os.path.exists(CREDS_FILE):
+            print(f"[{label}] No credentials — skipping.")
             continue
 
         print(f"\n[{label}] Authenticating…")
         try:
-            creds = _get_credentials(token_path)
+            creds = _get_credentials(token)
         except Exception as e:
             print(f"[{label}] Auth failed: {e}")
             continue
 
-        gmail_svc = build("gmail", "v1", credentials=creds)
-        ws        = _get_sheet(creds)
-        existing  = _get_existing_email_ids(ws)
+        svc  = build("gmail", "v1", credentials=creds)
+        ws   = _get_sheet(creds)
+        seen = _existing_ids(ws)
 
-        print(f"[{label}] Searching Gmail…")
-        results   = gmail_svc.users().messages().list(
-            userId="me", q=GMAIL_QUERY, maxResults=50
+        print(f"[{label}] Querying Gmail…")
+        res  = svc.users().messages().list(
+            userId="me", q=GMAIL_QUERY, maxResults=100
         ).execute()
-        messages  = results.get("messages", [])
-        print(f"[{label}] Found {len(messages)} candidate emails.")
+        msgs = res.get("messages", [])
+        print(f"[{label}] {len(msgs)} emails matched query.")
 
         logged = 0
-        for msg in messages:
+        for m in msgs:
             try:
-                ok = _process_message(msg["id"], gmail_svc, ws, existing, label)
-                if ok:
+                if _process(m["id"], svc, ws, seen, label):
                     logged += 1
             except Exception as e:
-                print(f"  ✗ Error on {msg['id']}: {e}")
+                print(f"  ✗ Error: {e}")
 
-        print(f"[{label}] Logged {logged} new job(s).")
-        total_logged += logged
+        print(f"[{label}] ✔ {logged} new jobs logged.")
+        total += logged
 
-    print(f"\nDone. Total new jobs logged: {total_logged}")
+    print(f"\nTotal: {total} new jobs logged.")
 
 
 if __name__ == "__main__":
     run_agent()
+  
