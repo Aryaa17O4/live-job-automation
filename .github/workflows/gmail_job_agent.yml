@@ -20,12 +20,22 @@ jobs:
       - name: Install dependencies
         run: pip install -r requirements-gmail.txt
 
-      - name: Run Gmail Job Agent
+      - name: Write credential files
         env:
           GMAIL_TOKEN_1_JSON: ${{ secrets.GMAIL_TOKEN_1_JSON }}
           GMAIL_TOKEN_2_JSON: ${{ secrets.GMAIL_TOKEN_2_JSON }}
           GOOGLE_CREDENTIALS: ${{ secrets.GOOGLE_SERVICE_ACCOUNT_JSON }}
+        run: |
+          echo "$GMAIL_TOKEN_1_JSON" > token_1.json
+          echo "$GMAIL_TOKEN_2_JSON" > token_2.json
+          echo "$GOOGLE_CREDENTIALS" > credentials.json
+
+      - name: Run Gmail Job Agent
+        env:
           GOOGLE_SHEET_ID: ${{ secrets.GOOGLE_SHEET_ID }}
+          GMAIL_TOKEN_1: token_1.json
+          GMAIL_TOKEN_2: token_2.json
+          GOOGLE_CREDS_FILE: credentials.json
         run: python agents/gmail_job_agent.py
 
       - name: Upload results
